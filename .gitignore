@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.env.local
+*.local
+# Service account do Firebase Admin SDK: NUNCA versionar
+service-account*.json
+*-firebase-adminsdk-*.json
+# Dados e logs do Firebase Emulator Suite
+.emulator-data/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+coverage/
+.DS_Store

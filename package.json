@@ -1,0 +1,33 @@
+{
+  "name": "cadernin",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "emulators": "firebase emulators:start --import ./.emulator-data --export-on-exit",
+    "emulators:backup": "firebase emulators:export ./.emulator-data --force",
+    "dev:api": "npm run dev -w @cadernin/api",
+    "dev:web": "npm run dev -w @cadernin/web",
+    "dev": "concurrently -n emu,api,web -c yellow,cyan,magenta \"npm run emulators\" \"npm run dev:api\" \"npm run dev:web\"",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:rules": "npm run test:rules -w @cadernin/api"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "concurrently": "^10.0.6",
+    "firebase-tools": "^15.34.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "@firebase/util@1.15.3": true,
+    "protobufjs@7.6.6": true,
+    "re2": false
+  }
+}

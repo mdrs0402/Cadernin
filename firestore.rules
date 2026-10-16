@@ -1,0 +1,85 @@
+rules_version = '2';
+
+// Regras finais do Cadernin.
+//
+// Toda ESCRITA passa pela API (Admin SDK, que ignora estas regras): é lá que ficam o limite de
+// crédito, as transações atômicas, o estorno e o limite de 1 lembrete por dia. Por isso nenhum
+// cliente web/mobile escreve direto no Firestore — nem o dono da loja.
+//
+// LEITURA direta é liberada só para o próprio dono do dado (defesa em profundidade; o front atual
+// lê tudo pela API):
+//   - lojista: a própria loja e tudo dentro dela;
+//   - cliente: o próprio perfil, os próprios vínculos e, em cada loja vinculada, só o próprio
+//     cadastro, os próprios lançamentos e os próprios lembretes.
+// Convites nunca são legíveis (senão daria para descobrir códigos).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function storePath(storeId) {
+      return /databases/$(database)/documents/stores/$(storeId);
+    }
+
+    function isStoreOwner(storeId) {
+      return signedIn() && get(storePath(storeId)).data.ownerUid == request.auth.uid;
+    }
+
+    // O vínculo vale pelo cadastro do cliente (userUid), não pelo documento de link sozinho.
+    function isLinkedCustomer(storeId, customerId) {
+      return signedIn()
+        && get(/databases/$(database)/documents/stores/$(storeId)/customers/$(customerId)).data.userUid == request.auth.uid;
+    }
+
+    function linkPath(storeId) {
+      return /databases/$(database)/documents/users/$(request.auth.uid)/links/$(storeId);
+    }
+
+    function hasAccountIn(storeId) {
+      return signedIn() && exists(linkPath(storeId)) && isLinkedCustomer(storeId, get(linkPath(storeId)).data.customerId);
+    }
+
+    match /users/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow list, write: if false;
+
+      match /links/{storeId} {
+        allow read: if signedIn() && request.auth.uid == uid;
+        allow write: if false;
+      }
+    }
+
+    match /stores/{storeId} {
+      allow get: if signedIn() && (resource.data.ownerUid == request.auth.uid || hasAccountIn(storeId));
+      allow list: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow write: if false;
+
+      match /customers/{customerId} {
+        allow read: if isStoreOwner(storeId) || (signedIn() && resource.data.userUid == request.auth.uid);
+        allow write: if false;
+      }
+
+      // Lançamentos são imutáveis: nem criar, nem editar, nem apagar pelo cliente.
+      match /transactions/{txId} {
+        allow read: if isStoreOwner(storeId) || isLinkedCustomer(storeId, resource.data.customerId);
+        allow write: if false;
+      }
+
+      match /reminders/{reminderId} {
+        allow read: if isStoreOwner(storeId) || isLinkedCustomer(storeId, resource.data.customerId);
+        allow write: if false;
+      }
+    }
+
+    match /invites/{code} {
+      allow read, write: if false;
+    }
+
+    // Qualquer outra coleção: fechada.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
