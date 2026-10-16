@@ -180,7 +180,7 @@ Um único projeto na Vercel com **Services** (`vercel.json`) publica as duas par
 | Serviço | Pasta      | Rota pública | O que é                                                        |
 | ------- | ---------- | ------------ | -------------------------------------------------------------- |
 | `web`   | `apps/web` | `/`          | front Vite (estático, com fallback de SPA para `index.html`)   |
-| `api`   | `apps/api` | `/api/*`     | API Express; entrada `src/vercel.ts`, que monta as rotas em `/api` |
+| `api`   | `apps/api` | `/api/*`     | API Express; entrada `index.js` → `src/vercel.ts`, que monta as rotas em `/api` |
 
 O navegador chama a API pelo próprio domínio (`/api`), então não há chamadas internas entre serviços
 (nenhuma *binding*). Na Vercel, importe o repositório com **Root Directory** `./` e
