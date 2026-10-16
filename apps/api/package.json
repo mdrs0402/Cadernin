@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch --env-file=.env src/server.ts",
+    "dev": "tsx watch --env-file=.env src/dev.ts",
     "build": "tsup",
-    "start": "node --env-file=.env dist/server.js",
+    "start": "node --env-file=.env dist/dev.mjs",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run --passWithNoTests",
     "test:rules": "vitest run --config vitest.rules.config.ts"

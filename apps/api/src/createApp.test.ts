@@ -2,7 +2,7 @@ import type { AddressInfo } from 'node:net';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createApp } from './app';
+import { createApp } from './createApp';
 import { conflict, unprocessable } from './errors';
 import { requireRole } from './middleware/auth';
 import { errorHandler } from './middleware/error';

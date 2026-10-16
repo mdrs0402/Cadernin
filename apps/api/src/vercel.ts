@@ -1,5 +1,5 @@
 import express from 'express';
-import { createApp } from './app';
+import { createApp } from './createApp';
 
 // Entrada da API na Vercel: o front e a API ficam no mesmo domínio, com a API em /api/*.
 const app = express();

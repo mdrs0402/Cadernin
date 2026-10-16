@@ -1,5 +1,5 @@
 import { env } from './config/env';
-import { createApp } from './app';
+import { createApp } from './createApp';
 
 createApp().listen(env.PORT, () => {
   console.log(`API Cadernin em http://localhost:${env.PORT}`);
