@@ -5,7 +5,7 @@
       "root": "apps/api",
       "framework": "express",
       "buildCommand": "npm run build",
-      "entrypoint": "index.js"
+      "entrypoint": "index.cjs"
     },
     "web": {
       "root": "apps/web",
