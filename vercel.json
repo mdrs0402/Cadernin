@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm install",
+  "buildCommand": "npm run build -w @cadernin/api && npm run build -w @cadernin/web",
+  "outputDirectory": "apps/web/dist",
+  "functions": {
+    "api/index.js": { "includeFiles": "apps/api/dist/**" }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}

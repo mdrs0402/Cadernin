@@ -172,3 +172,30 @@ Para usar um provedor real no futuro (ex.: WhatsApp Business API), basta outra c
    e `FIREBASE_AUTH_EMULATOR_HOST`.
 8. Publique regras e índices: `npx firebase deploy --only firestore --project <id do projeto>`
    (faça `npx firebase login` antes). Os índices levam alguns minutos para ficar prontos.
+
+## Publicando na Vercel
+
+Um único projeto na Vercel serve o front (estático) e a API (função serverless em `api/index.js`,
+gerada a partir de `apps/api/src/vercel.ts`) no mesmo domínio: a API fica em `/api/*`.
+A configuração está em `vercel.json` — na Vercel, importe o repositório **com a raiz do repositório
+como Root Directory** e não mude os comandos de build.
+
+Antes, faça o checklist "Usando o Firebase real" acima (a produção usa o Firestore real, não o emulador).
+
+Variáveis de ambiente no projeto da Vercel (**Settings → Environment Variables**):
+
+| Variável                   | Valor                                                                 |
+| -------------------------- | --------------------------------------------------------------------- |
+| `VITE_API_URL`             | `/api`                                                                |
+| `VITE_USE_AUTH_EMULATOR`   | `false`                                                               |
+| `VITE_FIREBASE_API_KEY`    | do app Web no console do Firebase                                     |
+| `VITE_FIREBASE_AUTH_DOMAIN`| `<id do projeto>.firebaseapp.com`                                     |
+| `VITE_FIREBASE_PROJECT_ID` | `<id do projeto>`                                                     |
+| `VITE_FIREBASE_APP_ID`     | do app Web no console do Firebase                                     |
+| `FIREBASE_PROJECT_ID`      | `<id do projeto>`                                                     |
+| `WEB_ORIGIN`               | URL do site, ex.: `https://cadernin.vercel.app`                       |
+| `FIREBASE_SERVICE_ACCOUNT` | o **conteúdo** inteiro do JSON da service account (marque Sensitive)  |
+
+Não defina `FIRESTORE_EMULATOR_HOST` nem `FIREBASE_AUTH_EMULATOR_HOST` na Vercel. Depois do primeiro
+deploy, adicione o domínio do site em **Authentication → Configurações → Domínios autorizados** no
+Firebase, senão o login com Google é recusado.

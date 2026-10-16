@@ -7,6 +7,8 @@ const envSchema = z.object({
   FIRESTORE_EMULATOR_HOST: z.string().optional(),
   FIREBASE_AUTH_EMULATOR_HOST: z.string().optional(),
   GOOGLE_APPLICATION_CREDENTIALS: z.string().optional(),
+  // Conteúdo do JSON da service account (para hospedagens sem arquivo, como a Vercel).
+  FIREBASE_SERVICE_ACCOUNT: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

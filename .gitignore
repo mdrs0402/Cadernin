@@ -13,3 +13,4 @@ firestore-debug.log
 ui-debug.log
 coverage/
 .DS_Store
+.vercel
