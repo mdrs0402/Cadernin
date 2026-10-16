@@ -175,10 +175,16 @@ Para usar um provedor real no futuro (ex.: WhatsApp Business API), basta outra c
 
 ## Publicando na Vercel
 
-Um único projeto na Vercel serve o front (estático) e a API (função serverless em `api/index.js`,
-gerada a partir de `apps/api/src/vercel.ts`) no mesmo domínio: a API fica em `/api/*`.
-A configuração está em `vercel.json` — na Vercel, importe o repositório **com a raiz do repositório
-como Root Directory** e não mude os comandos de build.
+Um único projeto na Vercel com **Services** (`vercel.json`) publica as duas partes no mesmo domínio:
+
+| Serviço | Pasta      | Rota pública | O que é                                                        |
+| ------- | ---------- | ------------ | -------------------------------------------------------------- |
+| `web`   | `apps/web` | `/`          | front Vite (estático, com fallback de SPA para `index.html`)   |
+| `api`   | `apps/api` | `/api/*`     | API Express; entrada `src/vercel.ts`, que monta as rotas em `/api` |
+
+O navegador chama a API pelo próprio domínio (`/api`), então não há chamadas internas entre serviços
+(nenhuma *binding*). Na Vercel, importe o repositório com **Root Directory** `./` e
+**Application Preset** `Services`.
 
 Antes, faça o checklist "Usando o Firebase real" acima (a produção usa o Firestore real, não o emulador).
 
