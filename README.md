@@ -1,207 +1,146 @@
 # Cadernin — fiado digital
 
-Monorepo (npm workspaces):
+Um app só, **sem servidor**: o React fala direto com o Firebase (Auth + Firestore) e é publicado na
+Vercel como site estático.
 
 ```
-apps/web         React + Vite + TS, React Router, TanStack Query, Tailwind
-apps/api         Node + Express 5 + TS, Firebase Admin SDK, Zod
-packages/shared  tipos, schemas Zod e regras de negócio compartilhadas
-firestore.rules  firebase.json  .firebaserc
+src/              app React + Vite + TS (React Router, TanStack Query, Tailwind)
+  api/            hooks do React Query que as telas usam (useCustomers, useCreateTransaction…)
+  data/           leitura e escrita no Firestore (substitui a antiga API Express)
+  shared/         tipos, schemas Zod e regras de negócio puras (dinheiro, vencimentos, lembretes)
+  pages/ components/ routes/ auth/ lib/
+test/             testes das firestore.rules (rodam no emulador)
+firestore.rules   A ÚNICA barreira de segurança — ver "Segurança" abaixo
+firestore.indexes.json  firebase.json  .firebaserc  vercel.json
 ```
+
+> Antes era um monorepo com `apps/web` (front) e `apps/api` (Express + Firebase Admin). As regras de
+> negócio da API foram para `src/data/` e passaram a ser **conferidas pelas `firestore.rules`**.
+> As pastas `apps/` e `packages/` não são mais usadas e podem ser apagadas.
 
 ## Pré-requisitos
 
 - Node 20+ (testado com 24) e npm 10+
-- Java 21+ (o emulador do Firestore roda em Java). Teste com `java -version`.
-- A Firebase CLI vem como dependência do projeto (`npx firebase ...`), não precisa instalar global.
+- Java 21+ (só para o emulador do Firestore em desenvolvimento e nos testes das regras).
+- A Firebase CLI vem como dependência do projeto (`npx firebase ...`).
 
-## Rodando localmente (com emuladores, sem precisar de projeto no console)
+## Rodando localmente
 
 ```bash
 npm install
-cp apps/api/.env.example apps/api/.env
-cp apps/web/.env.example apps/web/.env
+cp .env.example .env      # e preencha as VITE_FIREBASE_*
 npm run dev
 ```
 
-`npm run dev` sobe tudo junto:
+`npm run dev` sobe o emulador (Auth + Firestore) e o Vite juntos:
 
-| Serviço            | URL                           |
-| ------------------ | ----------------------------- |
-| Web                | http://localhost:5173         |
-| API                | http://localhost:3333         |
-| Emulator UI        | http://127.0.0.1:4000         |
-| Auth / Firestore   | 127.0.0.1:9099 / 127.0.0.1:8080 |
+| Serviço          | URL                             |
+| ---------------- | ------------------------------- |
+| App              | http://localhost:5173           |
+| Emulator UI      | http://127.0.0.1:4000           |
+| Auth / Firestore | 127.0.0.1:9099 / 127.0.0.1:8080 |
 
-Modo padrão de desenvolvimento: **login Google real** (projeto `cadernin-25dff`) e
-**Firestore no emulador** (dados locais em memória).
+Padrão de desenvolvimento: **login Google real** e **Firestore no emulador** (`VITE_USE_FIRESTORE_EMULATOR=true`).
+Para 100% offline, use também `VITE_USE_AUTH_EMULATOR=true`.
 
 > ⚠️ Os dados do emulador só vão para `.emulator-data/` quando ele **encerra normalmente** (Ctrl+C).
-> Se o processo cair ou o PC desligar, perde-se o que não foi salvo. Com o `npm run dev` rodando,
-> salve um retrato a qualquer momento em outro terminal com `npm run emulators:backup`.
+> Salve um retrato a qualquer momento com `npm run emulators:backup`.
 
-Para rodar 100% offline com o login falso do emulador: em `apps/web/.env` use
-`VITE_USE_AUTH_EMULATOR=true` e em `apps/api/.env` descomente `FIREBASE_AUTH_EMULATOR_HOST`.
+| Script                  | O que faz                                                             |
+| ----------------------- | --------------------------------------------------------------------- |
+| `npm run typecheck`     | TypeScript                                                            |
+| `npm test`              | testes unitários (Vitest), sem Firebase                               |
+| `npm run test:rules`    | sobe o emulador e testa as `firestore.rules` (projeto isolado `demo-rules`) |
+| `npm run build`         | build de produção em `dist/`                                          |
+| `npm run deploy:rules`  | publica `firestore.rules` e `firestore.indexes.json` no Firebase      |
 
-Scripts úteis:
+## Como funciona sem servidor
 
-| Script                     | O que faz                                                         |
-| -------------------------- | ----------------------------------------------------------------- |
-| `npm run typecheck`        | TypeScript em todos os pacotes                                    |
-| `npm test`                 | testes unitários (Vitest) de shared, api e web — sem Firebase     |
-| `npm run test:rules`       | testes das `firestore.rules` (precisa do emulador rodando)        |
-| `npm run emulators:backup` | salva os dados do emulador em `.emulator-data/`                   |
-| `npm run build`            | build de produção da API e do front                               |
+1. Login com Google pelo Firebase Auth (popup). A identidade é o `uid` do Firebase.
+2. O app lê e grava no Firestore com o SDK web (`src/data/`). Operações que mexem em mais de um
+   documento (lançamento + saldo, convite + cliente, vínculo do cliente) vão numa **transação**.
+3. As `firestore.rules` conferem cada escrita no servidor do Google. Mesmo quem abrir o console do
+   navegador e chamar o SDK direto não consegue furar as regras.
 
-## Fluxo de autenticação
+### Dados
 
-1. O front faz login com Google (Firebase Auth, popup) e obtém o ID token.
-2. Toda chamada à API envia `Authorization: Bearer <idToken>`.
-3. `requireAuth` (apps/api/src/middleware/auth.ts) verifica o token com o Admin SDK; a identidade
-   vem só do token. `requireRole(...)` checa o custom claim `role`.
+| Caminho                                | O que é                                                    |
+| -------------------------------------- | ---------------------------------------------------------- |
+| `users/{uid}`                          | perfil e papel (`merchant`/`customer`), gravado uma vez     |
+| `users/{uid}/links/{storeId}`          | lojas onde o cliente tem conta                             |
+| `stores/{storeId}`                     | loja (lojas novas: `storeId` = uid do dono)                 |
+| `stores/{storeId}/customers/{id}`      | cliente: limite, `balanceDue`, `lastTxId`, convite          |
+| `stores/{storeId}/transactions/{id}`   | compras, pagamentos e estornos (imutáveis)                  |
+| `stores/{storeId}/reminders/{id}`      | lembretes (simulados)                                       |
+| `invites/{code}`                       | código de convite de 6 caracteres (uso único)               |
 
-## API
+## Segurança (firestore.rules)
 
-Todas as rotas (exceto `/health`) exigem `Authorization: Bearer <idToken>`. Valores em **centavos inteiros**.
+Sem API, **as regras são a única barreira**. Elas garantem:
 
-| Método | Rota                              | Papel    | O que faz                                                   |
-| ------ | --------------------------------- | -------- | ----------------------------------------------------------- |
-| GET    | `/me`                             | qualquer | identidade + perfil + loja (corrige claim desatualizado)    |
-| POST   | `/me/profile`                     | sem      | escolhe perfil (grava `users/{uid}` + custom claim `role`); lojista cria a loja |
-| GET    | `/store`                          | merchant | dados da própria loja                                       |
-| PATCH  | `/store`                          | merchant | renomeia a loja                                             |
-| GET    | `/store/dashboard`                | merchant | painel: a receber, vencidos, vencem em breve, mês, 7 dias, perto do limite, últimos lançamentos |
-| GET    | `/store/customers`                | merchant | lista clientes                                              |
-| POST   | `/store/customers`                | merchant | cria cliente (gera código de convite)                       |
-| GET    | `/store/customers/:id`            | merchant | detalhe                                                     |
-| PATCH  | `/store/customers/:id`            | merchant | edita nome/telefone/limite (`balanceDue` nunca é editável)  |
-| DELETE | `/store/customers/:id`            | merchant | exclui **só se não houver lançamentos**                     |
-| POST   | `/store/customers/:id/invite`     | merchant | gera novo código (invalida o anterior)                      |
-| GET    | `/store/customers/:id/transactions` | merchant | histórico do cliente (mais recente primeiro)              |
-| POST   | `/store/customers/:id/transactions` | merchant | lança compra (`purchase`) ou pagamento (`payment`)        |
-| POST   | `/store/customers/:id/transactions/:txId/reversal` | merchant | estorna um lançamento (nada é apagado)     |
-| GET    | `/store/reminders`                | merchant | quem está devendo, o lembrete que caberia hoje (com prévia do texto) e os últimos enviados |
-| POST   | `/store/reminders`                | merchant | envia os sugeridos de hoje (`{}`) ou só para `{ customerIds: [...] }` |
-| POST   | `/store/customers/:id/reminder`   | merchant | lembrete para um cliente (409 se já recebeu hoje, 422 se não deve nada) |
-| GET    | `/customer/reminders`             | customer | recados recebidos das lojas (`?storeId=` para uma loja)     |
-| GET    | `/customer/accounts`              | customer | contas do cliente: limite, saldo, vencido, próximo vencimento, compras do mês |
-| GET    | `/customer/transactions`          | customer | histórico de compras/pagamentos (`?storeId=` para uma loja) |
-| POST   | `/customer/links`                 | customer | vincula a conta usando o código de convite                  |
+- **Papel definitivo:** cada um cria só o próprio `users/{uid}`, uma vez; ninguém troca de papel.
+- **Uma loja por lojista:** a loja é criada com id = uid do dono, no mesmo batch do perfil de lojista.
+- **Saldo nunca é editado direto.** Todo lançamento vai junto com a atualização do cliente
+  (`balanceDue` + `lastTxId`), e a regra confere a conta: compra soma e não passa do limite; pagamento
+  subtrai e não passa da dívida; estorno usa o valor do original, marca o original e não deixa o saldo
+  negativo. Não dá para estornar duas vezes nem mexer no saldo de outro cliente.
+- **Lançamentos imutáveis:** sem edição nem exclusão (só a marca de "estornado").
+- **Cliente só é excluído** se nunca teve lançamento.
+- **1 lembrete por cliente por dia** (fuso de São Paulo), conferido com o horário do servidor.
+- **Convite de uso único:** só quem sabe o código consegue apagá-lo, e só apagando ele dá para vincular.
+  Convites são lidos só pelo código exato, nunca listados.
+- **Leitura:** lojista só a própria loja; cliente só o próprio perfil e, em cada loja vinculada, só o
+  próprio cadastro, lançamentos e recados. O vínculo vale pelo `userUid` do cadastro, não pelo link.
 
-Vínculo do cliente: o lojista cadastra o cliente e recebe um código de 6 caracteres
-(`invites/{code}`). O cliente entra, escolhe "Sou cliente" e digita o código; a API grava
-`customers/{id}.userUid` e `users/{uid}/links/{storeId}` na mesma transação e apaga o convite.
+Os testes em `test/firestore.rules.test.ts` tentam cada um desses ataques direto pelo SDK.
 
-Lançamentos: cada compra, pagamento ou estorno é gravado em `stores/{storeId}/transactions` na
-**mesma transação do Firestore** que atualiza `balanceDue`. Compra que passa do limite é recusada
-(422 `credit_limit_exceeded`); pagamento maior que a dívida também (422 `payment_exceeds_balance`).
-Lançamentos nunca são apagados nem editados: para corrigir, estorne (cria um `reversal` e marca o original).
-Vencimentos: pagamentos quitam as compras mais antigas primeiro, então o saldo devedor está nas compras
-mais recentes. "Vencido" é a parte ainda em aberto das compras com vencimento passado (cálculo em
-`packages/shared/src/dashboard.ts`). Datas de "hoje" e "este mês" usam o fuso `America/Sao_Paulo`.
-
-O histórico e os recados do cliente usam os índices compostos `customerId + createdAt desc`
-de `firestore.indexes.json` (coleções `transactions` e `reminders`).
+**Toda mudança em `firestore.rules` precisa de `npm run deploy:rules`** — a Vercel não publica regras.
 
 ## Lembretes (simulados)
 
-Nesta versão **nenhuma mensagem sai de verdade**. A API fala só com a interface
-`NotificationService` (`apps/api/src/notifications/`); a implementação atual,
-`SimulatedNotificationService`, escreve a mensagem no log da API (`[lembrete simulado] whatsapp para ...`)
-e devolve um id fictício. O lembrete fica gravado em `stores/{storeId}/reminders` e o cliente que usa
-o app o vê em **Recados da loja**.
+Nenhuma mensagem sai de verdade. `src/data/notifications.ts` tem a interface `NotificationService` e a
+implementação `SimulatedNotificationService`, que só escreve no console. O lembrete fica gravado em
+`stores/{storeId}/reminders` e o cliente o vê em **Recados da loja**.
 
-- **Quem é sugerido:** quem tem compra vencida em aberto (`overdue`) ou vencendo hoje / nos próximos
-  7 dias (`due_soon`). Quem só tem saldo (`balance`) aparece na lista, mas só recebe se o lojista escolher.
-- **Texto:** montado em `packages/shared/src/reminders.ts` (primeiro nome, loja, valor e data).
-- **1 por cliente por dia** (fuso de São Paulo), garantido em transação: cliques simultâneos geram um só.
-- **Envio em duas fases:** a transação grava o lembrete como `queued` e marca `lastReminderAt`; depois o
-  `NotificationService` envia e o status vira `simulated`/`sent`. Se o envio falhar, fica `failed` e o
-  cliente volta a poder ser lembrado no mesmo dia.
-- **Envio manual:** o lojista dispara pela tela **Lembretes** ou pelo botão **Lembrar** no cliente.
-  Não há envio automático agendado no MVP.
+- **Sugeridos:** compra vencida em aberto (`overdue`) ou vencendo hoje / nos próximos 7 dias (`due_soon`).
+  Quem só tem saldo (`balance`) aparece, mas só recebe se o lojista escolher.
+- **Texto:** `src/shared/reminders.ts`.
 
-Para usar um provedor real no futuro (ex.: WhatsApp Business API), basta outra classe que implemente
-`NotificationService.send` e escolhê-la em `apps/api/src/notifications/index.ts`.
-
-## Segurança e regras do Firestore
-
-- Toda **escrita** passa pela API (Admin SDK). As `firestore.rules` bloqueiam qualquer escrita direta
-  do front, inclusive do dono da loja: assim o limite de crédito, as transações atômicas, o estorno e o
-  limite de lembretes não têm como ser contornados.
-- **Leitura** direta (defesa em profundidade; o front atual lê tudo pela API): o lojista lê só a própria
-  loja; o cliente lê o próprio perfil e vínculos e, em cada loja vinculada, só o próprio cadastro,
-  lançamentos e recados. O vínculo vale pelo `userUid` do cadastro, não pelo link sozinho.
-  Convites (`invites`) não são legíveis por ninguém.
-- A loja do lojista vem sempre do `uid` do token, nunca de um id enviado pelo front.
-- Nenhum segredo no repositório: `.env` e `service-account*.json` estão no `.gitignore`.
-
-## Testes
-
-- `npm test`: regras de dinheiro, telefone, convite, crédito, vencimentos (FIFO), resumo da conta,
-  lembretes (quem lembrar e texto), schemas da API, `NotificationService` simulado, middlewares de
-  erro/papel, rotas HTTP sem token e CORS, e formatação de datas do front.
-- `npm run test:rules`: 11 cenários das `firestore.rules` (lojista × outra loja, cliente × outro cliente,
-  link forjado, lançamentos imutáveis, convites fechados). Usa o projeto isolado `demo-rules` no emulador
-  e não toca nos seus dados.
+Envio real por WhatsApp precisaria de uma chave secreta do provedor, e chave secreta não pode ficar no
+navegador: isso exigiria uma função no servidor (ex.: Vercel Function ou Cloud Function).
 
 ## Limites conhecidos do MVP
 
 - Histórico limitado aos 200 lançamentos mais recentes por cliente (sem paginação).
-- O painel e a tela de lembretes leem o histórico de cada cliente devedor: bom para uma loja de bairro,
-  precisaria de agregados para milhares de clientes.
+- O painel e a tela de lembretes leem o histórico de cada cliente devedor: bom para uma loja de bairro.
 - O perfil (lojista ou cliente) é definitivo.
-- Fora do escopo: análise de risco por IA, geolocalização, pagamento online, WhatsApp real e modo offline.
+- Telefone repetido na mesma loja é checado pelo app, não pelas regras.
 
-## Usando o Firebase real (checklist)
+## Publicando (Firebase + Vercel)
 
-1. Acesse https://console.firebase.google.com → **Adicionar projeto** → dê um nome (ex.: `cadernin`).
-   Anote o **ID do projeto**.
-2. **Criação → Authentication → Vamos começar → Método de login → Google → Ativar**, escolha o
-   e-mail de suporte e salve.
-3. Em **Authentication → Configurações → Domínios autorizados**, confirme que `localhost` está na lista
-   (adicione o domínio de produção quando publicar).
-4. **Criação → Firestore Database → Criar banco de dados**, modo **produção**, região
-   `southamerica-east1` (São Paulo).
-5. **⚙ Configurações do projeto → Geral → Seus apps → ícone Web (`</>`)**, registre o app e copie
-   `apiKey`, `authDomain`, `projectId` e `appId` para `apps/web/.env`; coloque `VITE_USE_EMULATORS=false`.
-6. **⚙ Configurações do projeto → Contas de serviço → Gerar nova chave privada.** Salve o JSON
-   **fora do repositório** e aponte `GOOGLE_APPLICATION_CREDENTIALS` para ele em `apps/api/.env`.
-   Nunca faça commit desse arquivo.
-7. Em `apps/api/.env`: `FIREBASE_PROJECT_ID=<id do projeto>` e **remova** `FIRESTORE_EMULATOR_HOST`
-   e `FIREBASE_AUTH_EMULATOR_HOST`.
-8. Publique regras e índices: `npx firebase deploy --only firestore --project <id do projeto>`
-   (faça `npx firebase login` antes). Os índices levam alguns minutos para ficar prontos.
+### 1. Firebase (uma vez)
 
-## Publicando na Vercel
+1. **Authentication → Método de login → Google → Ativar.**
+2. **Authentication → Configurações → Domínios autorizados:** adicione `localhost` e o domínio do site
+   (ex.: `cadernin.vercel.app`, e o seu domínio próprio, se tiver). Sem isso o login com Google é
+   recusado com `auth/unauthorized-domain`.
+3. **Firestore Database → Criar banco de dados** (modo produção, região `southamerica-east1`), se ainda
+   não existir.
+4. Publique regras e índices: `npx firebase login` e depois `npm run deploy:rules`.
+   Os índices levam alguns minutos para ficar prontos.
 
-Um único projeto na Vercel com **Services** (`vercel.json`) publica as duas partes no mesmo domínio:
+### 2. Vercel
 
-| Serviço | Pasta      | Rota pública | O que é                                                        |
-| ------- | ---------- | ------------ | -------------------------------------------------------------- |
-| `web`   | `apps/web` | `/`          | front Vite (estático, com fallback de SPA para `index.html`)   |
-| `api`   | `apps/api` | `/api/*`     | API Express; entrada `index.cjs` → `src/vercel.ts`, que monta as rotas em `/api` |
+Projeto com **Root Directory** `./` e **Framework Preset** `Vite` (o `vercel.json` já define build e
+saída). Variáveis em **Settings → Environment Variables**:
 
-O navegador chama a API pelo próprio domínio (`/api`), então não há chamadas internas entre serviços
-(nenhuma *binding*). Na Vercel, importe o repositório com **Root Directory** `./` e
-**Application Preset** `Services`.
+| Variável                    | Valor                                   |
+| --------------------------- | --------------------------------------- |
+| `VITE_FIREBASE_API_KEY`     | do app Web no console do Firebase       |
+| `VITE_FIREBASE_AUTH_DOMAIN` | `<id do projeto>.firebaseapp.com`       |
+| `VITE_FIREBASE_PROJECT_ID`  | `<id do projeto>`                       |
+| `VITE_FIREBASE_APP_ID`      | do app Web no console do Firebase       |
 
-Antes, faça o checklist "Usando o Firebase real" acima (a produção usa o Firestore real, não o emulador).
-
-Variáveis de ambiente no projeto da Vercel (**Settings → Environment Variables**):
-
-| Variável                   | Valor                                                                 |
-| -------------------------- | --------------------------------------------------------------------- |
-| `VITE_API_URL`             | `/api`                                                                |
-| `VITE_USE_AUTH_EMULATOR`   | `false`                                                               |
-| `VITE_FIREBASE_API_KEY`    | do app Web no console do Firebase                                     |
-| `VITE_FIREBASE_AUTH_DOMAIN`| `<id do projeto>.firebaseapp.com`                                     |
-| `VITE_FIREBASE_PROJECT_ID` | `<id do projeto>`                                                     |
-| `VITE_FIREBASE_APP_ID`     | do app Web no console do Firebase                                     |
-| `FIREBASE_PROJECT_ID`      | `<id do projeto>`                                                     |
-| `WEB_ORIGIN`               | URL do site, ex.: `https://cadernin.vercel.app`                       |
-| `FIREBASE_SERVICE_ACCOUNT` | o **conteúdo** inteiro do JSON da service account (marque Sensitive)  |
-
-Não defina `FIRESTORE_EMULATOR_HOST` nem `FIREBASE_AUTH_EMULATOR_HOST` na Vercel. Depois do primeiro
-deploy, adicione o domínio do site em **Authentication → Configurações → Domínios autorizados** no
-Firebase, senão o login com Google é recusado.
+Não defina `VITE_USE_FIRESTORE_EMULATOR` nem `VITE_USE_AUTH_EMULATOR` na Vercel.
+As `VITE_*` entram no site **na hora do build**: depois de mudar alguma, faça um novo deploy.
+Não há mais service account, `WEB_ORIGIN` nem `VITE_API_URL`.

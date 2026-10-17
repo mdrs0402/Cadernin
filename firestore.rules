@@ -1,80 +1,305 @@
 rules_version = '2';
 
-// Regras finais do Cadernin.
+// Regras do Cadernin — SEM servidor.
 //
-// Toda ESCRITA passa pela API (Admin SDK, que ignora estas regras): é lá que ficam o limite de
-// crédito, as transações atômicas, o estorno e o limite de 1 lembrete por dia. Por isso nenhum
-// cliente web/mobile escreve direto no Firestore — nem o dono da loja.
+// O app web fala direto com o Firestore. Então estas regras são a ÚNICA barreira de segurança:
+// tudo que antes a API garantia (limite de crédito, saldo, estorno, convites, 1 lembrete por dia)
+// é conferido aqui, em cada escrita.
 //
-// LEITURA direta é liberada só para o próprio dono do dado (defesa em profundidade; o front atual
-// lê tudo pela API):
-//   - lojista: a própria loja e tudo dentro dela;
-//   - cliente: o próprio perfil, os próprios vínculos e, em cada loja vinculada, só o próprio
-//     cadastro, os próprios lançamentos e os próprios lembretes.
-// Convites nunca são legíveis (senão daria para descobrir códigos).
+// Padrão usado para o saldo: todo lançamento é gravado JUNTO (mesmo batch/transação) com a
+// atualização do cliente. O cliente guarda `lastTxId` = id do lançamento novo, e a regra do
+// lançamento confere a conta: saldo depois == saldo antes ± valor. Assim ninguém consegue mudar
+// `balanceDue` sem um lançamento que explique a mudança, nem criar lançamento sem mexer no saldo.
+//
+// Papéis: o papel (merchant/customer) fica em users/{uid}.role, gravado uma única vez.
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function signedIn() {
-      return request.auth != null;
-    }
+    /* ---------- Caminhos ---------- */
 
-    function storePath(storeId) {
-      return /databases/$(database)/documents/stores/$(storeId);
-    }
+    function userDoc(uid) { return /databases/$(database)/documents/users/$(uid); }
+    function linkDoc(uid, storeId) { return /databases/$(database)/documents/users/$(uid)/links/$(storeId); }
+    function storeDoc(storeId) { return /databases/$(database)/documents/stores/$(storeId); }
+    function customerDoc(storeId, customerId) { return /databases/$(database)/documents/stores/$(storeId)/customers/$(customerId); }
+    function txDoc(storeId, txId) { return /databases/$(database)/documents/stores/$(storeId)/transactions/$(txId); }
+    function inviteDoc(code) { return /databases/$(database)/documents/invites/$(code); }
+
+    /* ---------- Quem é quem ---------- */
+
+    function signedIn() { return request.auth != null; }
+    function myRole() { return get(userDoc(request.auth.uid)).data.role; }
 
     function isStoreOwner(storeId) {
-      return signedIn() && get(storePath(storeId)).data.ownerUid == request.auth.uid;
+      return signedIn() && get(storeDoc(storeId)).data.ownerUid == request.auth.uid;
     }
 
     // O vínculo vale pelo cadastro do cliente (userUid), não pelo documento de link sozinho.
     function isLinkedCustomer(storeId, customerId) {
-      return signedIn()
-        && get(/databases/$(database)/documents/stores/$(storeId)/customers/$(customerId)).data.userUid == request.auth.uid;
-    }
-
-    function linkPath(storeId) {
-      return /databases/$(database)/documents/users/$(request.auth.uid)/links/$(storeId);
+      return signedIn() && get(customerDoc(storeId, customerId)).data.userUid == request.auth.uid;
     }
 
     function hasAccountIn(storeId) {
-      return signedIn() && exists(linkPath(storeId)) && isLinkedCustomer(storeId, get(linkPath(storeId)).data.customerId);
+      return signedIn()
+        && exists(linkDoc(request.auth.uid, storeId))
+        && isLinkedCustomer(storeId, get(linkDoc(request.auth.uid, storeId)).data.customerId);
     }
+
+    /* ---------- Validações de dados ---------- */
+
+    // Dinheiro sempre em centavos inteiros (teto: R$ 100 milhões, igual a MAX_CENTS).
+    function isCents(v) { return v is int && v >= 0 && v <= 10000000000; }
+    function isPositiveCents(v) { return isCents(v) && v >= 1; }
+    function strBetween(v, min, max) { return v is string && v.size() >= min && v.size() <= max; }
+    function validName(v) { return strBetween(v, 2, 80); }
+    // Só dígitos, DDD + número (mesma regra de isValidBRPhone).
+    function validPhone(v) { return v is string && v.matches('^[1-9][1-9]([0-9]{8}|9[0-9]{8})$'); }
+    // Mesmo alfabeto de INVITE_ALPHABET (sem 0/O, 1/I/L).
+    function validInviteCode(v) { return v is string && v.matches('^[A-HJKMNP-Z2-9]{6}$'); }
+    function validDay(v) { return v is string && v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
+
+    function changedOnly(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    function exactKeys(keys) { return request.resource.data.keys().hasOnly(keys) && request.resource.data.keys().hasAll(keys); }
+
+    // Dia no fuso da loja (America/Sao_Paulo é UTC-3 fixo desde 2019).
+    function storeDay(t) { return (t - duration.value(3, 'h')).date(); }
+
+    /* ---------- Lançamentos: a conta tem que fechar ---------- */
+
+    function purchaseOk(d, before, after) {
+      return isPositiveCents(d.amountCents)
+        && strBetween(d.description, 2, 200)
+        && (d.dueDate == null || validDay(d.dueDate))
+        && d.reversesId == null && d.reversesType == null
+        && after.balanceDue == before.balanceDue + d.amountCents
+        && after.balanceDue <= before.creditLimit;
+    }
+
+    function paymentOk(d, before, after) {
+      return isPositiveCents(d.amountCents)
+        && d.amountCents <= before.balanceDue
+        && strBetween(d.description, 1, 200)
+        && d.dueDate == null
+        && d.reversesId == null && d.reversesType == null
+        && after.balanceDue == before.balanceDue - d.amountCents;
+    }
+
+    // Estorno: aponta para uma compra/pagamento do mesmo cliente, ainda não estornado, e o marca.
+    function reversalOk(storeId, txId, d, before, after) {
+      let original = get(txDoc(storeId, d.reversesId)).data;
+      return d.reversesId is string
+        && original.customerId == d.customerId
+        && original.type in ['purchase', 'payment']
+        && original.get('reversedById', null) == null
+        && getAfter(txDoc(storeId, d.reversesId)).data.reversedById == txId
+        && d.amountCents == original.amountCents
+        && d.reversesType == original.type
+        && strBetween(d.description, 1, 500)
+        && d.dueDate == null
+        && after.balanceDue >= 0
+        && (
+          (original.type == 'purchase' && after.balanceDue == before.balanceDue - d.amountCents)
+          || (original.type == 'payment' && after.balanceDue == before.balanceDue + d.amountCents)
+        );
+    }
+
+    function newTransactionOk(storeId, txId) {
+      let d = request.resource.data;
+      let before = get(customerDoc(storeId, d.customerId)).data;
+      let after = getAfter(customerDoc(storeId, d.customerId)).data;
+      return exactKeys(['customerId', 'type', 'amountCents', 'description', 'dueDate', 'createdAt', 'createdBy',
+                        'reversesId', 'reversesType', 'reversedById'])
+        && d.createdAt == request.time
+        && d.createdBy == request.auth.uid
+        && d.reversedById == null
+        && after.lastTxId == txId
+        && (
+          (d.type == 'purchase' && purchaseOk(d, before, after))
+          || (d.type == 'payment' && paymentOk(d, before, after))
+          || (d.type == 'reversal' && reversalOk(storeId, txId, d, before, after))
+        );
+    }
+
+    /* ---------- Usuários ---------- */
 
     match /users/{uid} {
       allow get: if signedIn() && request.auth.uid == uid;
-      allow list, write: if false;
+
+      // Primeiro acesso: o próprio usuário escolhe o papel. Definitivo: não dá para editar depois.
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['name', 'email', 'photoURL', 'role', 'createdAt'])
+        && request.resource.data.keys().hasAll(['name', 'email', 'photoURL', 'role', 'createdAt'])
+        && request.resource.data.role in ['merchant', 'customer']
+        && strBetween(request.resource.data.name, 1, 80)
+        && (request.resource.data.email == null || request.resource.data.email == request.auth.token.get('email', null))
+        && (request.resource.data.photoURL == null || strBetween(request.resource.data.photoURL, 1, 2048))
+        && request.resource.data.createdAt == request.time;
+
+      allow list, update, delete: if false;
 
       match /links/{storeId} {
         allow read: if signedIn() && request.auth.uid == uid;
-        allow write: if false;
+
+        // Criado junto com o vínculo no cadastro do cliente (ver customers, "vincular").
+        allow create: if signedIn() && request.auth.uid == uid
+          && myRole() == 'customer'
+          && exactKeys(['storeId', 'customerId', 'linkedAt'])
+          && request.resource.data.storeId == storeId
+          && request.resource.data.linkedAt == request.time
+          && getAfter(customerDoc(storeId, request.resource.data.customerId)).data.userUid == uid;
+
+        allow update, delete: if false;
       }
     }
+
+    /* ---------- Lojas ---------- */
 
     match /stores/{storeId} {
       allow get: if signedIn() && (resource.data.ownerUid == request.auth.uid || hasAccountIn(storeId));
       allow list: if signedIn() && resource.data.ownerUid == request.auth.uid;
-      allow write: if false;
+
+      // Uma loja por lojista: o id da loja é o uid do dono. Criada junto com o perfil de lojista.
+      allow create: if signedIn() && storeId == request.auth.uid
+        && exactKeys(['ownerUid', 'name', 'createdAt'])
+        && request.resource.data.ownerUid == request.auth.uid
+        && validName(request.resource.data.name)
+        && request.resource.data.createdAt == request.time
+        && getAfter(userDoc(request.auth.uid)).data.role == 'merchant';
+
+      allow update: if isStoreOwner(storeId) && changedOnly(['name']) && validName(request.resource.data.name);
+      allow delete: if false;
 
       match /customers/{customerId} {
         allow read: if isStoreOwner(storeId) || (signedIn() && resource.data.userUid == request.auth.uid);
-        allow write: if false;
+
+        allow create: if isStoreOwner(storeId)
+          && exactKeys(['name', 'phone', 'creditLimit', 'balanceDue', 'userUid', 'inviteCode', 'lastReminderAt',
+                        'lastTxId', 'createdAt', 'createdBy'])
+          && validName(request.resource.data.name)
+          && validPhone(request.resource.data.phone)
+          && isCents(request.resource.data.creditLimit)
+          && request.resource.data.balanceDue == 0
+          && request.resource.data.userUid == null
+          && request.resource.data.lastReminderAt == null
+          && request.resource.data.lastTxId == null
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.createdBy == request.auth.uid
+          && validInviteCode(request.resource.data.inviteCode)
+          && getAfter(inviteDoc(request.resource.data.inviteCode)).data.storeId == storeId
+          && getAfter(inviteDoc(request.resource.data.inviteCode)).data.customerId == customerId;
+
+        allow update: if
+          // 1) lojista edita nome/telefone/limite (o saldo NUNCA é editado direto)
+          (isStoreOwner(storeId)
+            && changedOnly(['name', 'phone', 'creditLimit'])
+            && validName(request.resource.data.name)
+            && validPhone(request.resource.data.phone)
+            && isCents(request.resource.data.creditLimit))
+
+          // 2) lojista gera um código novo (o antigo é apagado no mesmo batch)
+          || (isStoreOwner(storeId)
+            && changedOnly(['inviteCode'])
+            && resource.data.userUid == null
+            && validInviteCode(request.resource.data.inviteCode)
+            && getAfter(inviteDoc(request.resource.data.inviteCode)).data.storeId == storeId
+            && getAfter(inviteDoc(request.resource.data.inviteCode)).data.customerId == customerId
+            && (resource.data.get('inviteCode', null) == null || !existsAfter(inviteDoc(resource.data.inviteCode))))
+
+          // 3) saldo muda SÓ com um lançamento novo deste cliente no mesmo batch (a conta é conferida nele)
+          || (isStoreOwner(storeId)
+            && changedOnly(['balanceDue', 'lastTxId'])
+            && isCents(request.resource.data.balanceDue)
+            && request.resource.data.lastTxId is string
+            && !exists(txDoc(storeId, request.resource.data.lastTxId))
+            && getAfter(txDoc(storeId, request.resource.data.lastTxId)).data.customerId == customerId)
+
+          // 4) lembrete: no máximo 1 por cliente por dia (no fuso da loja)
+          || (isStoreOwner(storeId)
+            && changedOnly(['lastReminderAt'])
+            && request.resource.data.lastReminderAt == request.time
+            && (resource.data.get('lastReminderAt', null) == null
+                || storeDay(resource.data.lastReminderAt) != storeDay(request.time)))
+
+          // 5) cliente vincula a conta com o código: só quem sabe o código consegue apagar o convite
+          || (signedIn()
+            && myRole() == 'customer'
+            && changedOnly(['userUid', 'inviteCode'])
+            && resource.data.userUid == null
+            && request.resource.data.userUid == request.auth.uid
+            && request.resource.data.inviteCode == null
+            && validInviteCode(resource.data.inviteCode)
+            && exists(inviteDoc(resource.data.inviteCode))
+            && !existsAfter(inviteDoc(resource.data.inviteCode))
+            && getAfter(linkDoc(request.auth.uid, storeId)).data.customerId == customerId);
+
+        // Só cliente que nunca teve lançamento (lastTxId nulo) e sem saldo.
+        allow delete: if isStoreOwner(storeId)
+          && resource.data.balanceDue == 0
+          && resource.data.get('lastTxId', null) == null
+          && (resource.data.get('inviteCode', null) == null || !existsAfter(inviteDoc(resource.data.inviteCode)));
       }
 
-      // Lançamentos são imutáveis: nem criar, nem editar, nem apagar pelo cliente.
+      // Lançamentos são imutáveis: só nascem, e a única mudança é marcar como estornado.
       match /transactions/{txId} {
         allow read: if isStoreOwner(storeId) || isLinkedCustomer(storeId, resource.data.customerId);
-        allow write: if false;
+
+        allow create: if isStoreOwner(storeId) && newTransactionOk(storeId, txId);
+
+        allow update: if isStoreOwner(storeId)
+          && changedOnly(['reversedById'])
+          && resource.data.type in ['purchase', 'payment']
+          && resource.data.get('reversedById', null) == null
+          && request.resource.data.reversedById is string
+          && !exists(txDoc(storeId, request.resource.data.reversedById))
+          && getAfter(txDoc(storeId, request.resource.data.reversedById)).data.reversesId == txId;
+
+        allow delete: if false;
       }
 
+      // Lembretes (simulados): gravados junto com o lastReminderAt do cliente (que impõe 1 por dia).
       match /reminders/{reminderId} {
         allow read: if isStoreOwner(storeId) || isLinkedCustomer(storeId, resource.data.customerId);
-        allow write: if false;
+
+        allow create: if isStoreOwner(storeId)
+          && exactKeys(['customerId', 'customerName', 'phone', 'kind', 'message', 'amountCents', 'dueDate', 'channel',
+                        'status', 'provider', 'providerMessageId', 'error', 'createdAt', 'createdBy'])
+          && request.resource.data.customerId is string
+          && getAfter(customerDoc(storeId, request.resource.data.customerId)).data.lastReminderAt == request.time
+          && strBetween(request.resource.data.customerName, 1, 80)
+          && request.resource.data.phone is string
+          && request.resource.data.kind in ['overdue', 'due_soon', 'balance']
+          && strBetween(request.resource.data.message, 1, 1000)
+          && isCents(request.resource.data.amountCents)
+          && (request.resource.data.dueDate == null || validDay(request.resource.data.dueDate))
+          && request.resource.data.channel == 'whatsapp'
+          && request.resource.data.status == 'simulated'
+          && request.resource.data.provider == 'simulado'
+          && strBetween(request.resource.data.providerMessageId, 1, 100)
+          && request.resource.data.error == null
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.createdBy == request.auth.uid;
+
+        allow update, delete: if false;
       }
     }
 
+    /* ---------- Convites ---------- */
+
+    // Lido só pelo código exato (nunca listado). 31^6 ≈ 887 milhões de códigos possíveis.
     match /invites/{code} {
-      allow read, write: if false;
+      allow get: if signedIn();
+      allow list, update: if false;
+
+      allow create: if validInviteCode(code)
+        && exactKeys(['storeId', 'customerId', 'createdAt'])
+        && isStoreOwner(request.resource.data.storeId)
+        && request.resource.data.customerId is string
+        && request.resource.data.createdAt == request.time
+        && getAfter(customerDoc(request.resource.data.storeId, request.resource.data.customerId)).data.inviteCode == code;
+
+      // Lojista apaga convites da própria loja; cliente apaga o convite que acabou de usar.
+      allow delete: if isStoreOwner(resource.data.storeId)
+        || (signedIn()
+          && getAfter(customerDoc(resource.data.storeId, resource.data.customerId)).data.userUid == request.auth.uid);
     }
 
     // Qualquer outra coleção: fechada.

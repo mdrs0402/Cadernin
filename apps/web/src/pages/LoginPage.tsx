@@ -42,11 +42,11 @@ export function LoginPage() {
 
         <div className="mt-10 max-w-xl lg:mt-0">
           <h1 className="text-[32px] leading-[1.1] font-extrabold tracking-tight text-balance sm:text-5xl">
-            O caderninho do fiado,{' '}
+            Caderninho do fiado,{' '}
             <span className="relative whitespace-nowrap text-accent-400">
-              agora no celular.
-              <svg viewBox="0 0 220 12" className="absolute -bottom-2 left-0 w-full" aria-hidden>
-                <path d="M2 9C60 3 150 2 218 7" stroke="currentColor" strokeWidth="4" fill="none" strokeLinecap="round" />
+              agora digitalmente!
+              <svg viewBox="0 0 220 12" preserveAspectRatio="none" className="absolute -bottom-3 left-0 h-3 w-full" aria-hidden>
+                <path d="M2 9C60 3 150 2 218 7" stroke="currentColor" strokeWidth="4" fill="none" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
               </svg>
             </span>
           </h1>
