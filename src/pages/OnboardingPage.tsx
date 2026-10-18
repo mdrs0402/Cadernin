@@ -48,7 +48,7 @@ export function OnboardingPage() {
 
   return (
     <div className="min-h-dvh bg-dotted">
-      <header className="mx-auto flex h-16 max-w-3xl items-center justify-between gap-4 px-4 sm:px-6">
+      <header className="relative z-30 mx-auto flex h-16 max-w-3xl items-center justify-between gap-4 px-4 sm:px-6">
         <Logo />
         <UserMenu />
       </header>
