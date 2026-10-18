@@ -8,6 +8,8 @@ type AuthState = {
   /** true até o Firebase dizer se há sessão salva. */
   initializing: boolean;
   signInWithGoogle: () => Promise<void>;
+  /** Abre o seletor do Google; se o usuário cancelar, continua na conta atual. */
+  switchAccount: () => Promise<void>;
   signOut: () => Promise<void>;
 };
 
@@ -33,6 +35,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       initializing,
       signInWithGoogle: async () => {
         await signInWithPopup(auth, googleProvider);
+      },
+      switchAccount: async () => {
+        const previousUid = auth.currentUser?.uid;
+        const { user: next } = await signInWithPopup(auth, googleProvider);
+        if (next.uid !== previousUid) await queryClient.resetQueries();
       },
       signOut: async () => {
         await fbSignOut(auth);
