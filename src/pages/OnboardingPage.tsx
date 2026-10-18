@@ -4,6 +4,7 @@ import { useState, type FormEvent, type ReactNode } from 'react';
 import { Navigate, useNavigate } from 'react-router';
 import { useCreateProfile, useMe } from '../api/me';
 import { useAuth } from '../auth/AuthProvider';
+import { UserMenu } from '../components/AppShell';
 import { Field, TextInput } from '../components/forms';
 import { Logo } from '../components/Logo';
 import { Button, cx, FullPageSpinner } from '../components/ui';
@@ -47,8 +48,9 @@ export function OnboardingPage() {
 
   return (
     <div className="min-h-dvh bg-dotted">
-      <header className="mx-auto flex h-16 max-w-3xl items-center px-4 sm:px-6">
+      <header className="mx-auto flex h-16 max-w-3xl items-center justify-between gap-4 px-4 sm:px-6">
         <Logo />
+        <UserMenu />
       </header>
 
       <main className="mx-auto max-w-3xl px-4 pt-4 pb-16 sm:px-6 sm:pt-10">

@@ -1,4 +1,4 @@
-import { ChevronDown, LogOut, type LucideIcon } from 'lucide-react';
+import { ArrowLeftRight, ChevronDown, LogOut, type LucideIcon } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, NavLink } from 'react-router';
 import { useAuth } from '../auth/AuthProvider';
@@ -99,9 +99,29 @@ export function AppShell({
   );
 }
 
-function UserMenu() {
-  const { user, signOut } = useAuth();
+export function UserMenu() {
+  const { user, switchAccount, signOut } = useAuth();
   const [open, setOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
+
+  async function handleSwitch() {
+    setSwitching(true);
+    setSwitchError(null);
+    try {
+      await switchAccount();
+      setOpen(false);
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      if (code === 'auth/popup-blocked') {
+        setSwitchError('O navegador bloqueou a janela do Google. Permita pop-ups e tente de novo.');
+      } else if (code !== 'auth/popup-closed-by-user' && code !== 'auth/cancelled-popup-request') {
+        setSwitchError('Não foi possível trocar de conta. Tente de novo.');
+      }
+    } finally {
+      setSwitching(false);
+    }
+  }
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -145,6 +165,20 @@ function UserMenu() {
               <p className="truncate text-xs text-stone-500">{user.email}</p>
             </div>
           </div>
+          <button
+            role="menuitem"
+            onClick={handleSwitch}
+            disabled={switching}
+            className="flex w-full items-center gap-2.5 px-4 py-3 text-sm font-semibold text-stone-700 transition hover:bg-stone-50 disabled:opacity-60"
+          >
+            <ArrowLeftRight className="size-4" aria-hidden />
+            {switching ? 'Abrindo o Google…' : 'Trocar de conta'}
+          </button>
+          {switchError && (
+            <p role="alert" className="mx-4 mb-2 rounded-lg bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+              {switchError}
+            </p>
+          )}
           <button
             role="menuitem"
             onClick={signOut}
