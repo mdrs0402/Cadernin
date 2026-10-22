@@ -1,146 +1,170 @@
-# Cadernin — fiado digital
+# 📒 Cadernin — o fiado, sem o caderno
 
-Um app só, **sem servidor**: o React fala direto com o Firebase (Auth + Firestore) e é publicado na
-Vercel como site estático.
+> Sistema web que **profissionaliza o "fiado"** do pequeno comércio: o lojista troca o caderninho de papel
+> por um controle confiável de clientes, limites, compras, pagamentos e cobranças — e o cliente acompanha
+> a própria conta pelo celular.
 
-```
-src/              app React + Vite + TS (React Router, TanStack Query, Tailwind)
-  api/            hooks do React Query que as telas usam (useCustomers, useCreateTransaction…)
-  data/           leitura e escrita no Firestore (substitui a antiga API Express)
-  shared/         tipos, schemas Zod e regras de negócio puras (dinheiro, vencimentos, lembretes)
-  pages/ components/ routes/ auth/ lib/
-test/             testes das firestore.rules (rodam no emulador)
-firestore.rules   A ÚNICA barreira de segurança — ver "Segurança" abaixo
-firestore.indexes.json  firebase.json  .firebaserc  vercel.json
-```
+<!-- Quando o site estiver no ar, descomente e preencha:
+🔗 **Teste agora:** https://seu-site.vercel.app
+-->
 
-> Antes era um monorepo com `apps/web` (front) e `apps/api` (Express + Firebase Admin). As regras de
-> negócio da API foram para `src/data/` e passaram a ser **conferidas pelas `firestore.rules`**.
-> As pastas `apps/` e `packages/` não são mais usadas e podem ser apagadas.
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
+![React](https://img.shields.io/badge/React_19-61DAFB?logo=react&logoColor=black)
+![Vite](https://img.shields.io/badge/Vite-646CFF?logo=vite&logoColor=white)
+![Firebase](https://img.shields.io/badge/Firebase-FFCA28?logo=firebase&logoColor=black)
+![Tailwind](https://img.shields.io/badge/Tailwind_CSS-06B6D4?logo=tailwindcss&logoColor=white)
+![Vitest](https://img.shields.io/badge/Vitest-6E9F18?logo=vitest&logoColor=white)
+![Vercel](https://img.shields.io/badge/Deploy-Vercel-000000?logo=vercel&logoColor=white)
 
-## Pré-requisitos
+<!-- Capturas de tela: salve as imagens em docs/img/ e descomente.
+| Painel do lojista | Conta do cliente |
+| :---: | :---: |
+| ![Painel do lojista](docs/img/painel-lojista.png) | ![Conta do cliente](docs/img/conta-cliente.png) |
+-->
 
-- Node 20+ (testado com 24) e npm 10+
-- Java 21+ (só para o emulador do Firestore em desenvolvimento e nos testes das regras).
-- A Firebase CLI vem como dependência do projeto (`npx firebase ...`).
+---
 
-## Rodando localmente
+## ⚡ Resumo em 30 segundos
+
+| | |
+| --- | --- |
+| **O que é** | App web completo (front + banco + autenticação + regras de segurança) para controle de vendas a prazo |
+| **Para quem** | Mercadinhos, padarias e comércios de bairro — e os clientes deles |
+| **Meu papel** | Projeto individual: ideia, modelagem dos dados, front-end, regras de segurança, testes e deploy |
+| **Stack principal** | React 19 · TypeScript · Firebase (Auth + Firestore) · Tailwind · Vitest · Vercel |
+| **Qualidade** | Mais de 100 testes automatizados, incluindo testes que **tentam burlar** as regras de segurança |
+| **Status** | MVP funcional, usado como projeto de estudo e portfólio |
+
+---
+
+## 🎯 O problema
+
+Em muitos comércios de bairro o fiado vive em caderno: página some, o saldo é refeito de cabeça, ninguém
+lembra quem passou do combinado e cobrar vira constrangimento. O Cadernin troca isso por um registro
+confiável, com regras claras (limite de crédito, vencimento) e lembretes de cobrança.
+
+## ✨ Funcionalidades
+
+**👨‍💼 Lojista**
+- Cadastro de clientes com **limite de crédito**
+- Convite do cliente por **código de 6 caracteres** (uso único)
+- Lançamento de **compras, pagamentos e estornos** — o saldo é sempre calculado pelo sistema, nunca digitado
+- **Painel** com visão das contas em aberto, vencidas e a vencer
+- **Lembretes de cobrança** sugeridos automaticamente (vencido / vence nos próximos 7 dias)
+
+**🙋 Cliente**
+- Entra com a conta Google e se vincula à loja pelo código de convite
+- Vê o próprio saldo, o histórico de lançamentos e os recados da loja
+
+**🛡️ Administração**
+- Suporte a um painel administrativo (projeto separado) que pode bloquear lojas e corrigir cadastros —
+  mas **nunca** mexe em saldo ou lançamentos
+
+---
+
+## 🧠 Decisões técnicas que eu destacaria
+
+1. **Arquitetura sem servidor (serverless).** O React conversa direto com o Firebase e o site é publicado
+   como estático na Vercel. Isso elimina custo e manutenção de um back-end para um MVP.
+
+2. **Segurança de verdade no servidor, não só na tela.** Sem API, quem garante as regras são as
+   [`firestore.rules`](firestore.rules), executadas nos servidores do Google. Mesmo alguém que abra o console
+   do navegador e chame o banco direto não consegue:
+   - alterar um saldo sem um lançamento que justifique a mudança;
+   - comprar acima do limite ou pagar mais do que deve;
+   - estornar duas vezes, editar ou apagar lançamentos;
+   - trocar de papel (lojista ↔ cliente) ou ler dados de outra loja/cliente.
+
+3. **Testes que atacam o próprio sistema.** Em [`test/firestore.rules.test.ts`](test/firestore.rules.test.ts)
+   cada regra acima é testada no emulador do Firebase tentando *quebrá-la*.
+
+4. **Dinheiro em centavos inteiros.** Nada de `float` para valores (evita erros como `0,1 + 0,2 ≠ 0,3`).
+   A conversão de texto como `"R$ 1.234,56"` é feita sem passar por número decimal — ver
+   [`src/shared/money.ts`](src/shared/money.ts).
+
+5. **Operações atômicas.** Lançamento + atualização de saldo, convite + vínculo do cliente: tudo vai numa
+   **transação** — ou grava tudo, ou nada.
+
+6. **Regras de negócio isoladas e testadas.** Dinheiro, vencimentos e lembretes ficam em
+   [`src/shared/`](src/shared), sem depender do Firebase, com testes unitários e validação com **Zod**.
+
+7. **Evolução de arquitetura.** O projeto começou como monorepo com API em **Express + Firebase Admin**
+   (pasta `apps/`) e depois foi migrado para serverless, movendo as regras da API para o Firestore Rules.
+   Foi uma decisão consciente de simplificar o deploy sem abrir mão da segurança.
+
+---
+
+## 🧰 Tecnologias
+
+| Camada          | Tecnologias                                                     |
+| --------------- | --------------------------------------------------------------- |
+| Front-end       | React 19, TypeScript, Vite, React Router, TanStack Query        |
+| Estilo / UI     | Tailwind CSS, Lucide Icons                                      |
+| Back-end (BaaS) | Firebase Authentication (Google) e Cloud Firestore              |
+| Validação       | Zod                                                             |
+| Testes          | Vitest, `@firebase/rules-unit-testing` (emulador do Firestore)  |
+| Deploy          | Vercel (site estático) + Firebase (regras e índices)            |
+| Versão anterior | Node.js, Express 5, Firebase Admin SDK, Helmet, CORS            |
+
+---
+
+## 🔎 Avaliando o código em 5 minutos
+
+| Quer ver…                         | Abra                                                                              |
+| --------------------------------- | --------------------------------------------------------------------------------- |
+| Regras de segurança               | [`firestore.rules`](firestore.rules)                                              |
+| Testes de ataque às regras        | [`test/firestore.rules.test.ts`](test/firestore.rules.test.ts)                    |
+| Lógica de dinheiro e lembretes    | [`src/shared/money.ts`](src/shared/money.ts), [`src/shared/reminders.ts`](src/shared/reminders.ts) |
+| Lançamentos com transação         | [`src/data/transactions.ts`](src/data/transactions.ts)                            |
+| Rotas e controle de acesso        | [`src/main.tsx`](src/main.tsx), [`src/routes/guards.tsx`](src/routes/guards.tsx)  |
+| Telas principais                  | [`src/pages/merchant/`](src/pages/merchant), [`src/pages/customer/`](src/pages/customer) |
+
+## 🚀 Rodando localmente
+
+Pré-requisitos: **Node 20+** e **Java 21+** (para o emulador do Firebase).
 
 ```bash
 npm install
-cp .env.example .env      # e preencha as VITE_FIREBASE_*
-npm run dev
+cp .env.example .env      # preencha as VITE_FIREBASE_*
+npm run dev               # app + emuladores em http://localhost:5173
 ```
 
-`npm run dev` sobe o emulador (Auth + Firestore) e o Vite juntos:
+```bash
+npm test                  # testes unitários
+npm run test:rules        # testes das regras de segurança (emulador)
+npm run typecheck         # checagem de tipos
+```
 
-| Serviço          | URL                             |
-| ---------------- | ------------------------------- |
-| App              | http://localhost:5173           |
-| Emulator UI      | http://127.0.0.1:4000           |
-| Auth / Firestore | 127.0.0.1:9099 / 127.0.0.1:8080 |
+Detalhes de ambiente, modelo de dados, segurança e deploy:
+**[📚 documentação técnica](docs/DOCUMENTACAO-TECNICA.md)**.
 
-Padrão de desenvolvimento: **login Google real** e **Firestore no emulador** (`VITE_USE_FIRESTORE_EMULATOR=true`).
-Para 100% offline, use também `VITE_USE_AUTH_EMULATOR=true`.
+---
 
-> ⚠️ Os dados do emulador só vão para `.emulator-data/` quando ele **encerra normalmente** (Ctrl+C).
-> Salve um retrato a qualquer momento com `npm run emulators:backup`.
+## 🚧 Status e próximos passos
 
-| Script                  | O que faz                                                             |
-| ----------------------- | --------------------------------------------------------------------- |
-| `npm run typecheck`     | TypeScript                                                            |
-| `npm test`              | testes unitários (Vitest), sem Firebase                               |
-| `npm run test:rules`    | sobe o emulador e testa as `firestore.rules` (projeto isolado `demo-rules`) |
-| `npm run build`         | build de produção em `dist/`                                          |
-| `npm run deploy:rules`  | publica `firestore.rules` e `firestore.indexes.json` no Firebase      |
+MVP funcional. Os lembretes de cobrança são **simulados** (ficam registrados e aparecem para o cliente,
+mas nenhuma mensagem sai de verdade).
 
-## Como funciona sem servidor
+- [ ] Envio real de lembretes por WhatsApp (exige uma função no servidor para guardar a chave do provedor)
+- [ ] Paginação do histórico (hoje: últimos 200 lançamentos por cliente)
+- [ ] Relatórios exportáveis para o lojista
 
-1. Login com Google pelo Firebase Auth (popup). A identidade é o `uid` do Firebase.
-2. O app lê e grava no Firestore com o SDK web (`src/data/`). Operações que mexem em mais de um
-   documento (lançamento + saldo, convite + cliente, vínculo do cliente) vão numa **transação**.
-3. As `firestore.rules` conferem cada escrita no servidor do Google. Mesmo quem abrir o console do
-   navegador e chamar o SDK direto não consegue furar as regras.
+## 📖 O que aprendi
 
-### Dados
+- Pensar em **segurança no servidor**: validação no front ajuda o usuário, mas não protege nada.
+- Modelar dados num banco NoSQL pensando nas consultas e nas regras de acesso.
+- Escrever testes que tentam **quebrar** o sistema, não só confirmar o caminho feliz.
+- Avaliar trade-offs de arquitetura (API própria × serverless) e migrar um projeto que já funcionava.
 
-| Caminho                                | O que é                                                    |
-| -------------------------------------- | ---------------------------------------------------------- |
-| `users/{uid}`                          | perfil e papel (`merchant`/`customer`), gravado uma vez     |
-| `users/{uid}/links/{storeId}`          | lojas onde o cliente tem conta                             |
-| `stores/{storeId}`                     | loja (lojas novas: `storeId` = uid do dono)                 |
-| `stores/{storeId}/customers/{id}`      | cliente: limite, `balanceDue`, `lastTxId`, convite          |
-| `stores/{storeId}/transactions/{id}`   | compras, pagamentos e estornos (imutáveis)                  |
-| `stores/{storeId}/reminders/{id}`      | lembretes (simulados)                                       |
-| `invites/{code}`                       | código de convite de 6 caracteres (uso único)               |
+---
 
-## Segurança (firestore.rules)
+## 👤 Autor
 
-Sem API, **as regras são a única barreira**. Elas garantem:
+**Alan Medeiros Batista** — estudante de Análise e Desenvolvimento de Sistemas no Centro Universitário
+Fametro (Manaus/AM), em busca de **estágio ou vaga júnior** em desenvolvimento de software.
 
-- **Papel definitivo:** cada um cria só o próprio `users/{uid}`, uma vez; ninguém troca de papel.
-- **Uma loja por lojista:** a loja é criada com id = uid do dono, no mesmo batch do perfil de lojista.
-- **Saldo nunca é editado direto.** Todo lançamento vai junto com a atualização do cliente
-  (`balanceDue` + `lastTxId`), e a regra confere a conta: compra soma e não passa do limite; pagamento
-  subtrai e não passa da dívida; estorno usa o valor do original, marca o original e não deixa o saldo
-  negativo. Não dá para estornar duas vezes nem mexer no saldo de outro cliente.
-- **Lançamentos imutáveis:** sem edição nem exclusão (só a marca de "estornado").
-- **Cliente só é excluído** se nunca teve lançamento.
-- **1 lembrete por cliente por dia** (fuso de São Paulo), conferido com o horário do servidor.
-- **Convite de uso único:** só quem sabe o código consegue apagá-lo, e só apagando ele dá para vincular.
-  Convites são lidos só pelo código exato, nunca listados.
-- **Leitura:** lojista só a própria loja; cliente só o próprio perfil e, em cada loja vinculada, só o
-  próprio cadastro, lançamentos e recados. O vínculo vale pelo `userUid` do cadastro, não pelo link.
+Projeto criado por iniciativa própria, para aprender na prática construindo algo útil do começo ao fim.
 
-Os testes em `test/firestore.rules.test.ts` tentam cada um desses ataques direto pelo SDK.
-
-**Toda mudança em `firestore.rules` precisa de `npm run deploy:rules`** — a Vercel não publica regras.
-
-## Lembretes (simulados)
-
-Nenhuma mensagem sai de verdade. `src/data/notifications.ts` tem a interface `NotificationService` e a
-implementação `SimulatedNotificationService`, que só escreve no console. O lembrete fica gravado em
-`stores/{storeId}/reminders` e o cliente o vê em **Recados da loja**.
-
-- **Sugeridos:** compra vencida em aberto (`overdue`) ou vencendo hoje / nos próximos 7 dias (`due_soon`).
-  Quem só tem saldo (`balance`) aparece, mas só recebe se o lojista escolher.
-- **Texto:** `src/shared/reminders.ts`.
-
-Envio real por WhatsApp precisaria de uma chave secreta do provedor, e chave secreta não pode ficar no
-navegador: isso exigiria uma função no servidor (ex.: Vercel Function ou Cloud Function).
-
-## Limites conhecidos do MVP
-
-- Histórico limitado aos 200 lançamentos mais recentes por cliente (sem paginação).
-- O painel e a tela de lembretes leem o histórico de cada cliente devedor: bom para uma loja de bairro.
-- O perfil (lojista ou cliente) é definitivo.
-- Telefone repetido na mesma loja é checado pelo app, não pelas regras.
-
-## Publicando (Firebase + Vercel)
-
-### 1. Firebase (uma vez)
-
-1. **Authentication → Método de login → Google → Ativar.**
-2. **Authentication → Configurações → Domínios autorizados:** adicione `localhost` e o domínio do site
-   (ex.: `cadernin.vercel.app`, e o seu domínio próprio, se tiver). Sem isso o login com Google é
-   recusado com `auth/unauthorized-domain`.
-3. **Firestore Database → Criar banco de dados** (modo produção, região `southamerica-east1`), se ainda
-   não existir.
-4. Publique regras e índices: `npx firebase login` e depois `npm run deploy:rules`.
-   Os índices levam alguns minutos para ficar prontos.
-
-### 2. Vercel
-
-Projeto com **Root Directory** `./` e **Framework Preset** `Vite` (o `vercel.json` já define build e
-saída). Variáveis em **Settings → Environment Variables**:
-
-| Variável                    | Valor                                   |
-| --------------------------- | --------------------------------------- |
-| `VITE_FIREBASE_API_KEY`     | do app Web no console do Firebase       |
-| `VITE_FIREBASE_AUTH_DOMAIN` | `<id do projeto>.firebaseapp.com`       |
-| `VITE_FIREBASE_PROJECT_ID`  | `<id do projeto>`                       |
-| `VITE_FIREBASE_APP_ID`      | do app Web no console do Firebase       |
-
-Não defina `VITE_USE_FIRESTORE_EMULATOR` nem `VITE_USE_AUTH_EMULATOR` na Vercel.
-As `VITE_*` entram no site **na hora do build**: depois de mudar alguma, faça um novo deploy.
-Não há mais service account, `WEB_ORIGIN` nem `VITE_API_URL`.
+- 💼 GitHub: [@mdrs0402](https://github.com/mdrs0402)
+- 📧 E-mail: medeirossalan24@gmail.com
+<!-- - 🔗 LinkedIn: https://www.linkedin.com/in/seu-perfil -->
