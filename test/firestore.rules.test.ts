@@ -8,6 +8,7 @@ import {
 } from '@firebase/rules-unit-testing';
 import {
   collection,
+  collectionGroup,
   deleteDoc,
   doc,
   getDoc,
@@ -460,5 +461,126 @@ describe('convites', () => {
 
   it('não cria link solto apontando para cadastro alheio', async () => {
     await assertFails(setDoc(doc(as('ana'), 'users/ana/links/s2'), { storeId: 's2', customerId: 'x', linkedAt: serverTimestamp() }));
+  });
+});
+
+describe('painel administrativo', () => {
+  const ADMIN_EMAIL = 'admin@exemplo.com';
+  const withToken = (uid: string, token: Record<string, unknown>) =>
+    env.authenticatedContext(uid, token).firestore() as unknown as Firestore;
+  const admin = () => withToken('adm', { email: ADMIN_EMAIL, email_verified: true, admin: true });
+  const log = (db: Firestore, b: ReturnType<typeof writeBatch>, over: Record<string, unknown> = {}) =>
+    b.set(doc(collection(db, 'adminLog')), {
+      action: 'store_block', targetPath: 'stores/s1', summary: 'Bloqueou a loja', byUid: 'adm', byEmail: ADMIN_EMAIL,
+      createdAt: serverTimestamp(), ...over,
+    });
+
+  function block(db: Firestore, blocked: boolean, reason: string | null = 'Fraude suspeita') {
+    const b = writeBatch(db);
+    b.update(doc(db, 'stores/s1'), { blocked, blockedReason: reason, blockedAt: serverTimestamp(), blockedBy: 'adm' });
+    log(db, b, { action: blocked ? 'store_block' : 'store_unblock' });
+    return b.commit();
+  }
+
+  it('quem é admin: só quem tem a marca admin no token', async () => {
+    await assertSucceeds(getDocs(collection(admin(), 'stores')));
+    await assertSucceeds(getDocs(collection(withToken('adm2', { email: 'outro@x.com', admin: true }), 'stores')));
+    // e-mail verificado, sem a marca, não vale — nem o mesmo e-mail do admin
+    await assertFails(getDocs(collection(withToken('adm', { email: ADMIN_EMAIL, email_verified: true }), 'stores')));
+    await assertFails(getDocs(collection(withToken('x', { email: 'outro@x.com', email_verified: true }), 'stores')));
+    // marca com valor diferente de true não vale
+    await assertFails(getDocs(collection(withToken('y', { email: 'outro@x.com', admin: 'true' }), 'stores')));
+  });
+
+  it('admin lê tudo, inclusive juntando todas as lojas', async () => {
+    const db = admin();
+    await assertSucceeds(getDocs(collection(db, 'users')));
+    await assertSucceeds(getDoc(doc(db, 'users/ana')));
+    await assertSucceeds(getDocs(collectionGroup(db, 'customers')));
+    await assertSucceeds(getDocs(collectionGroup(db, 'transactions')));
+    await assertSucceeds(getDocs(collectionGroup(db, 'reminders')));
+    await assertSucceeds(getDocs(collectionGroup(db, 'links')));
+    await assertSucceeds(getDocs(collection(db, 'stores/s2/customers')));
+    await assertSucceeds(getDocs(collection(db, 'adminLog')));
+  });
+
+  it('quem não é admin não junta lojas nem lê o registro', async () => {
+    const db = as('lojista1');
+    await assertFails(getDocs(collectionGroup(db, 'customers')));
+    await assertFails(getDocs(collectionGroup(db, 'transactions')));
+    await assertFails(getDocs(collectionGroup(db, 'links')));
+    await assertFails(getDocs(collection(db, 'users')));
+    await assertFails(getDocs(collection(db, 'adminLog')));
+  });
+
+  it('loja bloqueada: lojista lê, mas não grava nada', async () => {
+    await assertSucceeds(block(admin(), true));
+    const db = as('lojista1');
+    await assertSucceeds(getDoc(doc(db, 'stores/s1')));
+    await assertSucceeds(getDocs(collection(db, 'stores/s1/customers')));
+    await assertFails(launch(db, 'n1', tx(), 1500));
+    await assertFails(updateDoc(doc(db, 'stores/s1'), { name: 'Padaria Nova' }));
+    await assertFails(updateDoc(doc(db, 'stores/s1/customers/c1'), { creditLimit: 8000 }));
+    const b = writeBatch(db);
+    b.set(doc(db, 'stores/s1/customers/c9'), {
+      name: 'Duda', phone: '21987654321', creditLimit: 3000, balanceDue: 0, userUid: null, inviteCode: 'ABC234',
+      lastReminderAt: null, lastTxId: null, createdAt: serverTimestamp(), createdBy: 'lojista1',
+    });
+    b.set(doc(db, 'invites/ABC234'), { storeId: 's1', customerId: 'c9', createdAt: serverTimestamp() });
+    await assertFails(b.commit());
+    // e o lojista não se desbloqueia sozinho
+    await assertFails(updateDoc(doc(db, 'stores/s1'), { blocked: false, blockedReason: null, blockedAt: serverTimestamp(), blockedBy: 'lojista1' }));
+  });
+
+  it('loja bloqueada não recebe cliente novo pelo convite', async () => {
+    await assertSucceeds(block(admin(), true));
+    const db = as('caio');
+    const b = writeBatch(db);
+    b.update(doc(db, 'stores/s1/customers/c2'), { userUid: 'caio', inviteCode: null });
+    b.delete(doc(db, 'invites/K7MQ2P'));
+    b.set(doc(db, 'users/caio/links/s1'), { storeId: 's1', customerId: 'c2', linkedAt: serverTimestamp() });
+    await assertFails(b.commit());
+  });
+
+  it('desbloqueada, a loja volta a lançar', async () => {
+    await assertSucceeds(block(admin(), true));
+    await assertSucceeds(block(admin(), false, null));
+    await assertSucceeds(launch(as('lojista1'), 'n1', tx(), 1500));
+  });
+
+  it('bloqueio exige motivo e é só do admin', async () => {
+    await assertFails(block(admin(), true, ''));
+    await assertFails(block(admin(), false, 'sobrou motivo'));
+    await assertFails(block(as('lojista2'), true));
+  });
+
+  it('admin corrige cadastro, mas nunca mexe no saldo nem lança', async () => {
+    const db = admin();
+    await assertSucceeds(updateDoc(doc(db, 'stores/s1/customers/c1'), { name: 'Ana Souza', phone: '11911112222', creditLimit: 9000 }));
+    await assertFails(updateDoc(doc(db, 'stores/s1/customers/c1'), { phone: '123' }));
+    await assertFails(updateDoc(doc(db, 'stores/s1/customers/c1'), { balanceDue: 0 }));
+    await assertFails(updateDoc(doc(db, 'stores/s1/customers/c1'), { userUid: null }));
+    await assertFails(launch(db, 'n1', tx({ createdBy: 'adm' }), 1500));
+    await assertSucceeds(updateDoc(doc(db, 'stores/s1'), { name: 'Padaria Central' }));
+    await assertFails(updateDoc(doc(db, 'stores/s1'), { ownerUid: 'lojista2' }));
+    await assertSucceeds(updateDoc(doc(db, 'users/ana'), { name: 'Ana Souza' }));
+    await assertFails(updateDoc(doc(db, 'users/ana'), { role: 'merchant' }));
+    await assertFails(deleteDoc(doc(db, 'stores/s1/transactions/t1')));
+  });
+
+  it('registro do admin: só cresce e não aceita autoria falsa', async () => {
+    const db = admin();
+    await assertSucceeds(setDoc(doc(db, 'adminLog/l1'), {
+      action: 'reveal_pii', targetPath: 'stores/s1/customers/c1', summary: 'Revelou telefone', byUid: 'adm',
+      byEmail: ADMIN_EMAIL, createdAt: serverTimestamp(),
+    }));
+    await assertFails(updateDoc(doc(db, 'adminLog/l1'), { summary: 'outro' }));
+    await assertFails(deleteDoc(doc(db, 'adminLog/l1')));
+    await assertFails(setDoc(doc(db, 'adminLog/l2'), {
+      action: 'reveal_pii', targetPath: 'x', summary: 'y', byUid: 'outro', byEmail: ADMIN_EMAIL, createdAt: serverTimestamp(),
+    }));
+    await assertFails(setDoc(doc(as('lojista1'), 'adminLog/l3'), {
+      action: 'reveal_pii', targetPath: 'x', summary: 'y', byUid: 'lojista1', byEmail: null, createdAt: serverTimestamp(),
+    }));
   });
 });

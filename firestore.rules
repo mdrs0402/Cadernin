@@ -12,6 +12,10 @@ rules_version = '2';
 // `balanceDue` sem um lançamento que explique a mudança, nem criar lançamento sem mexer no saldo.
 //
 // Papéis: o papel (merchant/customer) fica em users/{uid}.role, gravado uma única vez.
+//
+// Painel administrativo (projeto separado, mesmo banco): quem é admin é decidido SÓ aqui, em isAdmin().
+// Admin lê tudo, bloqueia/desbloqueia loja e corrige cadastros (nomes, telefone, limite). Admin NUNCA
+// lança, estorna nem mexe em saldo: o caderno de cada loja continua sendo só do lojista.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -27,11 +31,21 @@ service cloud.firestore {
     /* ---------- Quem é quem ---------- */
 
     function signedIn() { return request.auth != null; }
+
+    // Admin = marca `admin: true` no token (custom claim). Ela só pode ser gravada com o Admin SDK,
+    // nunca pelo navegador. Para incluir ou tirar alguém: node scripts/tornar-admin.mjs <email> [--remover]
+    function isAdmin() {
+      return signedIn() && request.auth.token.get('admin', false) == true;
+    }
     function myRole() { return get(userDoc(request.auth.uid)).data.role; }
 
     function isStoreOwner(storeId) {
       return signedIn() && get(storeDoc(storeId)).data.ownerUid == request.auth.uid;
     }
+
+    // Loja bloqueada pelo painel: o lojista continua LENDO tudo, mas não grava nada novo.
+    function storeBlocked(storeId) { return get(storeDoc(storeId)).data.get('blocked', false) == true; }
+    function canWriteStore(storeId) { return isStoreOwner(storeId) && !storeBlocked(storeId); }
 
     // O vínculo vale pelo cadastro do cliente (userUid), não pelo documento de link sozinho.
     function isLinkedCustomer(storeId, customerId) {
@@ -122,7 +136,11 @@ service cloud.firestore {
     /* ---------- Usuários ---------- */
 
     match /users/{uid} {
-      allow get: if signedIn() && request.auth.uid == uid;
+      allow get: if signedIn() && request.auth.uid == uid || isAdmin();
+      allow list: if isAdmin();
+
+      // Painel: só corrige o nome (o papel continua definitivo).
+      allow update: if isAdmin() && changedOnly(['name']) && strBetween(request.resource.data.name, 1, 80);
 
       // Primeiro acesso: o próprio usuário escolhe o papel. Definitivo: não dá para editar depois.
       allow create: if signedIn() && request.auth.uid == uid
@@ -134,7 +152,7 @@ service cloud.firestore {
         && (request.resource.data.photoURL == null || strBetween(request.resource.data.photoURL, 1, 2048))
         && request.resource.data.createdAt == request.time;
 
-      allow list, update, delete: if false;
+      allow delete: if false;
 
       match /links/{storeId} {
         allow read: if signedIn() && request.auth.uid == uid;
@@ -154,8 +172,8 @@ service cloud.firestore {
     /* ---------- Lojas ---------- */
 
     match /stores/{storeId} {
-      allow get: if signedIn() && (resource.data.ownerUid == request.auth.uid || hasAccountIn(storeId));
-      allow list: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow get: if signedIn() && (resource.data.ownerUid == request.auth.uid || hasAccountIn(storeId)) || isAdmin();
+      allow list: if signedIn() && resource.data.ownerUid == request.auth.uid || isAdmin();
 
       // Uma loja por lojista: o id da loja é o uid do dono. Criada junto com o perfil de lojista.
       allow create: if signedIn() && storeId == request.auth.uid
@@ -165,13 +183,23 @@ service cloud.firestore {
         && request.resource.data.createdAt == request.time
         && getAfter(userDoc(request.auth.uid)).data.role == 'merchant';
 
-      allow update: if isStoreOwner(storeId) && changedOnly(['name']) && validName(request.resource.data.name);
+      allow update: if
+        ((canWriteStore(storeId) || isAdmin()) && changedOnly(['name']) && validName(request.resource.data.name))
+        // Painel: bloqueia (com motivo) ou desbloqueia. blockedAt/blockedBy guardam a última mudança.
+        || (isAdmin()
+          && changedOnly(['blocked', 'blockedReason', 'blockedAt', 'blockedBy'])
+          && request.resource.data.blocked is bool
+          && request.resource.data.blockedAt == request.time
+          && request.resource.data.blockedBy == request.auth.uid
+          && (request.resource.data.blocked
+              ? strBetween(request.resource.data.blockedReason, 3, 300)
+              : request.resource.data.blockedReason == null));
       allow delete: if false;
 
       match /customers/{customerId} {
-        allow read: if isStoreOwner(storeId) || (signedIn() && resource.data.userUid == request.auth.uid);
+        allow read: if isStoreOwner(storeId) || (signedIn() && resource.data.userUid == request.auth.uid) || isAdmin();
 
-        allow create: if isStoreOwner(storeId)
+        allow create: if canWriteStore(storeId)
           && exactKeys(['name', 'phone', 'creditLimit', 'balanceDue', 'userUid', 'inviteCode', 'lastReminderAt',
                         'lastTxId', 'createdAt', 'createdBy'])
           && validName(request.resource.data.name)
@@ -188,15 +216,15 @@ service cloud.firestore {
           && getAfter(inviteDoc(request.resource.data.inviteCode)).data.customerId == customerId;
 
         allow update: if
-          // 1) lojista edita nome/telefone/limite (o saldo NUNCA é editado direto)
-          (isStoreOwner(storeId)
+          // 1) lojista (ou o painel) edita nome/telefone/limite (o saldo NUNCA é editado direto)
+          ((canWriteStore(storeId) || isAdmin())
             && changedOnly(['name', 'phone', 'creditLimit'])
             && validName(request.resource.data.name)
             && validPhone(request.resource.data.phone)
             && isCents(request.resource.data.creditLimit))
 
           // 2) lojista gera um código novo (o antigo é apagado no mesmo batch)
-          || (isStoreOwner(storeId)
+          || (canWriteStore(storeId)
             && changedOnly(['inviteCode'])
             && resource.data.userUid == null
             && validInviteCode(request.resource.data.inviteCode)
@@ -205,7 +233,7 @@ service cloud.firestore {
             && (resource.data.get('inviteCode', null) == null || !existsAfter(inviteDoc(resource.data.inviteCode))))
 
           // 3) saldo muda SÓ com um lançamento novo deste cliente no mesmo batch (a conta é conferida nele)
-          || (isStoreOwner(storeId)
+          || (canWriteStore(storeId)
             && changedOnly(['balanceDue', 'lastTxId'])
             && isCents(request.resource.data.balanceDue)
             && request.resource.data.lastTxId is string
@@ -213,7 +241,7 @@ service cloud.firestore {
             && getAfter(txDoc(storeId, request.resource.data.lastTxId)).data.customerId == customerId)
 
           // 4) lembrete: no máximo 1 por cliente por dia (no fuso da loja)
-          || (isStoreOwner(storeId)
+          || (canWriteStore(storeId)
             && changedOnly(['lastReminderAt'])
             && request.resource.data.lastReminderAt == request.time
             && (resource.data.get('lastReminderAt', null) == null
@@ -222,6 +250,7 @@ service cloud.firestore {
           // 5) cliente vincula a conta com o código: só quem sabe o código consegue apagar o convite
           || (signedIn()
             && myRole() == 'customer'
+            && !storeBlocked(storeId)
             && changedOnly(['userUid', 'inviteCode'])
             && resource.data.userUid == null
             && request.resource.data.userUid == request.auth.uid
@@ -232,7 +261,7 @@ service cloud.firestore {
             && getAfter(linkDoc(request.auth.uid, storeId)).data.customerId == customerId);
 
         // Só cliente que nunca teve lançamento (lastTxId nulo) e sem saldo.
-        allow delete: if isStoreOwner(storeId)
+        allow delete: if canWriteStore(storeId)
           && resource.data.balanceDue == 0
           && resource.data.get('lastTxId', null) == null
           && (resource.data.get('inviteCode', null) == null || !existsAfter(inviteDoc(resource.data.inviteCode)));
@@ -240,11 +269,11 @@ service cloud.firestore {
 
       // Lançamentos são imutáveis: só nascem, e a única mudança é marcar como estornado.
       match /transactions/{txId} {
-        allow read: if isStoreOwner(storeId) || isLinkedCustomer(storeId, resource.data.customerId);
+        allow read: if isStoreOwner(storeId) || isLinkedCustomer(storeId, resource.data.customerId) || isAdmin();
 
-        allow create: if isStoreOwner(storeId) && newTransactionOk(storeId, txId);
+        allow create: if canWriteStore(storeId) && newTransactionOk(storeId, txId);
 
-        allow update: if isStoreOwner(storeId)
+        allow update: if canWriteStore(storeId)
           && changedOnly(['reversedById'])
           && resource.data.type in ['purchase', 'payment']
           && resource.data.get('reversedById', null) == null
@@ -257,9 +286,9 @@ service cloud.firestore {
 
       // Lembretes (simulados): gravados junto com o lastReminderAt do cliente (que impõe 1 por dia).
       match /reminders/{reminderId} {
-        allow read: if isStoreOwner(storeId) || isLinkedCustomer(storeId, resource.data.customerId);
+        allow read: if isStoreOwner(storeId) || isLinkedCustomer(storeId, resource.data.customerId) || isAdmin();
 
-        allow create: if isStoreOwner(storeId)
+        allow create: if canWriteStore(storeId)
           && exactKeys(['customerId', 'customerName', 'phone', 'kind', 'message', 'amountCents', 'dueDate', 'channel',
                         'status', 'provider', 'providerMessageId', 'error', 'createdAt', 'createdBy'])
           && request.resource.data.customerId is string
@@ -291,15 +320,37 @@ service cloud.firestore {
 
       allow create: if validInviteCode(code)
         && exactKeys(['storeId', 'customerId', 'createdAt'])
-        && isStoreOwner(request.resource.data.storeId)
+        && canWriteStore(request.resource.data.storeId)
         && request.resource.data.customerId is string
         && request.resource.data.createdAt == request.time
         && getAfter(customerDoc(request.resource.data.storeId, request.resource.data.customerId)).data.inviteCode == code;
 
       // Lojista apaga convites da própria loja; cliente apaga o convite que acabou de usar.
-      allow delete: if isStoreOwner(resource.data.storeId)
+      allow delete: if canWriteStore(resource.data.storeId)
         || (signedIn()
           && getAfter(customerDoc(resource.data.storeId, resource.data.customerId)).data.userUid == request.auth.uid);
+    }
+
+    /* ---------- Painel administrativo ---------- */
+
+    // Consultas que juntam todas as lojas (collectionGroup): só o admin.
+    match /{path=**}/customers/{customerId} { allow read: if isAdmin(); }
+    match /{path=**}/transactions/{txId} { allow read: if isAdmin(); }
+    match /{path=**}/reminders/{reminderId} { allow read: if isAdmin(); }
+    match /{path=**}/links/{storeId} { allow read: if isAdmin(); }
+
+    // Registro do que o admin fez (bloqueios, correções, dados pessoais revelados). Só cresce.
+    match /adminLog/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin()
+        && exactKeys(['action', 'targetPath', 'summary', 'byUid', 'byEmail', 'createdAt'])
+        && request.resource.data.action in ['store_block', 'store_unblock', 'store_rename', 'customer_edit', 'user_rename', 'reveal_pii']
+        && strBetween(request.resource.data.targetPath, 1, 300)
+        && strBetween(request.resource.data.summary, 1, 500)
+        && request.resource.data.byUid == request.auth.uid
+        && request.resource.data.byEmail == request.auth.token.get('email', null)
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
     }
 
     // Qualquer outra coleção: fechada.
